@@ -6,7 +6,7 @@ de toutes ses prises, avec légendes et métadonnées.
 ## Démarrage sur une autre machine
 ```bash
 unzip albums_workflow.zip && cd albums_workflow
-bash setup.sh            # ou --gpu pour SAM local
+bash setup.sh            # CPU ; machine NVIDIA avec torch CUDA déjà installé : bash setup_gpu.sh
 # copier les HEIC dans ~/albums (ou modifier source_dir / out_dir dans config.yaml)
 mkdir -p ~/.config/albums && echo 'GEMINI_API_KEY=...' > ~/.config/albums/gemini.env && chmod 600 ~/.config/albums/gemini.env
 claude --model opus      # puis /effort low  (orchestrateur)
@@ -31,6 +31,13 @@ sont dans `.claude/agents/` et sont lancés par l'orchestrateur.
 
 Backends IA (`config.yaml` → `ai.*`) : `none` | `cmd` (outil local, gabarit `{in}` `{out}`)
 | `space` (Space Hugging Face via gradio_client). Test : `scripts/tester_ai.py`.
+
+## GPU (testé sur GTX 960, 2 Go)
+`bash setup_gpu.sh` réutilise le torch CUDA du python3.12 système (venv `--system-site-packages`),
+ajoute torchvision assorti (--no-deps), ultralytics, OpenCV 4.x, et un remplaçant `_lzma` si Python
+a été compilé sans liblzma. `bash setup_gpu.sh --test` vérifie la pile.
+Découpage : `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True venv/bin/python scripts/decoupe_local.py`
+(FastSAM-x + SAM 2.1 tiny, 20-70 s/page, ~200 Mo à 1,5 Go de mémoire GPU).
 
 ## Gemini
 `scripts/gemini.py` (REST, sans SDK, compte des appels, plafonds), `scripts/gemini_taches.py`
