@@ -11,7 +11,7 @@ Sorties par image : <dst>/<nom>/photo_NN.png, controle.jpg, boites.json
   (boites.json éditable à la main, puis --depuis-boites pour redécouper sans détection)
 
 Usage : python decoupe_local.py [--src ~/albums/pngnatives] [--dst ~/albums/decoupes]
-                                [--images 20261115_155120,...] [--modele FastSAM-x.pt]
+                                [--images 20261115_155120,...] [--modele FastSAM-x.pt | sam2.1_t.pt | sam2.1_s.pt | sam2.1_b.pt]
                                 [--depuis-boites] [--force]"""
 import argparse, json, time
 from pathlib import Path
@@ -25,7 +25,8 @@ P = dict(device="cpu", imgsz=1024, conf=0.25, iou=0.7,
          aire_min=0.004, aire_max=0.92,      # fraction de l'image
          remplissage_min=0.84, remplissage_plausible=0.70,               # part du quadrilatère couverte par le masque
          remplissage_masquee=0.93,           # en dessous : probablement recouverte
-         ratio_max=3.5, bord_px=0.004, marge_rognage=0.004)
+         ratio_max=3.5, aire_page_min=0.45,   # une « page entière » couvre au moins 45 % de l'image
+         bord_px=0.004, marge_rognage=0.004)
 
 
 def ordonner(q):
@@ -83,13 +84,57 @@ def masques_papier(img, w, h):
     return sorties
 
 
+def sam_grille(img, pred):
+    """SAM / SAM 2 économe en mémoire (GPU 2 Go) : image encodée UNE fois (demi-précision),
+    puis grille de points envoyée par petits lots ; masques réduits à P['imgsz']."""
+    H0, W0 = img.shape[:2]
+    kr = min(1.0, 1280 / max(H0, W0))         # image réduite : masques petits, mémoire GPU tenue
+    img = cv2.resize(img, None, fx=kr, fy=kr, interpolation=cv2.INTER_AREA) if kr < 1 else img
+    H, W = img.shape[:2]
+    n = P.get("grille", 24)
+    xs = (np.arange(n) + 0.5) * W / n
+    ys = (np.arange(n) + 0.5) * H / n
+    pts = [[float(x), float(y)] for y in ys for x in xs]
+    k = P["imgsz"] / max(H, W)
+    h, w = int(round(H * k)), int(round(W * k))
+    pred.set_image(img)
+    sortie = []
+    lot = P.get("lot_points", 16)
+    for i in range(0, len(pts), lot):
+        b = pts[i:i + lot]
+        r = pred(points=[[p] for p in b], labels=[[1] for _ in b])[0]
+        if r.masks is None:
+            continue
+        for m in r.masks.data.cpu().numpy():
+            sortie.append(cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST))
+    pred.reset_image()
+    # dédoublonnage grossier des masques quasi identiques
+    uniques, sig = [], set()
+    for m in sortie:
+        s_ = (int(m.sum()) // 200, int(np.argmax(m.any(1))) // 4, int(np.argmax(m.any(0))) // 4)
+        if s_ not in sig:
+            sig.add(s_); uniques.append(m)
+    return uniques
+
+
 def detecter(img, modele, debug=False):
     H, W = img.shape[:2]
-    res = modele(img, device=P["device"], retina_masks=False, imgsz=P["imgsz"], conf=P["conf"],
-                 iou=P["iou"], verbose=False)[0]
-    if res.masks is None:
+    H, W = img.shape[:2]
+    k = P["imgsz"] / max(H, W)
+    h, w = int(round(H * k)), int(round(W * k))
+    masks = []
+    for famille, mod in (modele if isinstance(modele, list) else [(P.get("famille"), modele)]):
+        if famille == "sam":
+            masks += sam_grille(img, mod)
+        else:
+            res = mod(img, device=P["device"], retina_masks=False, imgsz=P["imgsz"], conf=P["conf"],
+                      iou=P["iou"], verbose=False, save=False)[0]
+            if res.masks is not None:
+                for m in res.masks.data.cpu().numpy().astype(np.uint8):
+                    masks.append(cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST))
+    if not masks:
         return []
-    masks = res.masks.data.cpu().numpy().astype(np.uint8)       # N,h,w
+    masks = np.array(masks, np.uint8)
     h, w = masks.shape[1:]
     masks = list(masks) + masques_papier(img, w, h)
     sx, sy = W / w, H / h
@@ -120,8 +165,8 @@ def detecter(img, modele, debug=False):
         return (petit["masque"] & grand["qmasque"]).sum() / max(1, petit["masque"].sum())
     # 3) écarter d'abord les « pages » : un quad qui contient ≥ 2 autres tirages nets
     francs = [c for c in nets if not c["masquee"]]
-    pages = [c for c in nets if sum(1 for o in francs if o is not c and o["aire"] < 0.6 * c["aire"]
-                                    and dans(o, c) > 0.8) >= 2]
+    pages = [c for c in nets if c["aire"] > P["aire_page_min"] * h * w and
+             sum(1 for o in francs if o is not c and o["aire"] < 0.6 * c["aire"] and dans(o, c) > 0.8) >= 2]
     nets = [c for c in nets if not any(c is p for p in pages)]
     # 4) le plus grand d'abord ; écarter ce qui est contenu dans un tirage retenu
     #    (image intérieure d'un tirage à bord blanc, personnes, objets...)
@@ -211,12 +256,28 @@ def traiter(src, dst, modele, depuis_boites, force):
     return f"{src.stem} : {len(boites)} photos (partielles {np_}, masquées {nm}, pivotées {nr}) {time.time() - t:.1f} s"
 
 
+def charger_modele(nom, device):
+    from ultralytics import FastSAM, SAM
+    poids = Path(__file__).resolve().parent.parent / "modeles" / nom
+    poids.parent.mkdir(exist_ok=True)
+    if not poids.exists():
+        (SAM if nom.lower().startswith("sam") else FastSAM)(nom)        # téléchargement
+        if Path(nom).exists():
+            Path(nom).replace(poids)
+    if nom.lower().startswith(("sam", "mobile_sam")):
+        from ultralytics.models.sam import SAM2Predictor, Predictor as SAMPredictor
+        Pr = SAM2Predictor if "sam2" in nom.lower() else SAMPredictor
+        return "sam", Pr(overrides=dict(model=str(poids), imgsz=P["imgsz"], device=device, save=False,
+                                        half=device != "cpu", verbose=False, conf=0.5))
+    return "fastsam", FastSAM(str(poids))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default="~/albums/pngnatives")
     ap.add_argument("--dst", default="~/albums/decoupes")
     ap.add_argument("--images", default="")
-    ap.add_argument("--modele", default="FastSAM-x.pt")
+    ap.add_argument("--modele", default="FastSAM-x.pt+sam2.1_t.pt", help="un ou plusieurs modèles séparés par +")
     ap.add_argument("--depuis-boites", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--device", default="auto", help="auto | cpu | 0 (GPU CUDA n°0)")
@@ -237,12 +298,7 @@ def main():
         fichiers = [f for f in fichiers if f.stem in voulu]
     modele = None
     if not a.depuis_boites:
-        from ultralytics import FastSAM
-        poids = Path(__file__).resolve().parent.parent / "modeles" / a.modele
-        poids.parent.mkdir(exist_ok=True)
-        modele = FastSAM(str(poids) if poids.exists() else a.modele)
-        if not poids.exists() and Path(a.modele).exists():
-            Path(a.modele).replace(poids)
+        modele = [charger_modele(nom, P["device"]) for nom in a.modele.split("+")]
     for f in fichiers:
         print(traiter(f, dst, modele, a.depuis_boites, a.force), flush=True)
 
