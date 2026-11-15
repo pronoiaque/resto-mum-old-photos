@@ -21,7 +21,7 @@ import numpy as np
 
 FACE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 FACE2 = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
-P = dict(imgsz=1024, conf=0.25, iou=0.7,
+P = dict(device="cpu", imgsz=1024, conf=0.25, iou=0.7,
          aire_min=0.004, aire_max=0.92,      # fraction de l'image
          remplissage_min=0.84, remplissage_plausible=0.70,               # part du quadrilatère couverte par le masque
          remplissage_masquee=0.93,           # en dessous : probablement recouverte
@@ -85,7 +85,7 @@ def masques_papier(img, w, h):
 
 def detecter(img, modele, debug=False):
     H, W = img.shape[:2]
-    res = modele(img, device="cpu", retina_masks=False, imgsz=P["imgsz"], conf=P["conf"],
+    res = modele(img, device=P["device"], retina_masks=False, imgsz=P["imgsz"], conf=P["conf"],
                  iou=P["iou"], verbose=False)[0]
     if res.masks is None:
         return []
@@ -219,7 +219,17 @@ def main():
     ap.add_argument("--modele", default="FastSAM-x.pt")
     ap.add_argument("--depuis-boites", action="store_true")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--device", default="auto", help="auto | cpu | 0 (GPU CUDA n°0)")
+    ap.add_argument("--imgsz", type=int, default=P["imgsz"])
     a = ap.parse_args()
+    if a.device == "auto":
+        try:
+            import torch
+            a.device = "0" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            a.device = "cpu"
+    P["device"], P["imgsz"] = a.device, a.imgsz
+    print(f"périphérique : {'GPU CUDA' if a.device != 'cpu' else 'CPU'}, imgsz={a.imgsz}")
     src, dst = Path(a.src).expanduser(), Path(a.dst).expanduser()
     fichiers = sorted(src.glob("*.png"))
     if a.images:
