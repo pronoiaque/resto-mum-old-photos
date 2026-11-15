@@ -1,0 +1,3 @@
+# Optionnel, machine avec GPU NVIDIA : segmentation SAM locale (scripts/seg_sam_local.py)
+torch
+transformers>=4.40

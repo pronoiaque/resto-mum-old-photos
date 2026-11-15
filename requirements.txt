@@ -1,0 +1,13 @@
+opencv-python-headless>=4.8,<5     # OpenCV 5 retire CascadeClassifier
+opencv-python>=4.8,<5              # (ultralytics installe opencv-python : le garder en 4.x)
+pillow>=10
+pillow-heif>=0.16
+numpy>=1.24
+scikit-image>=0.21
+ImageHash>=4.3
+PyYAML>=6
+gradio_client>=2.0
+huggingface_hub>=0.24
+google-genai>=1.0                   # fusion générative (Gemini)
+ultralytics>=8.3                   # FastSAM (découpage local, CPU)
+torch                               # CPU suffit : --index-url https://download.pytorch.org/whl/cpu

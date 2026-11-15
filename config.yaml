@@ -1,0 +1,86 @@
+# Configuration du workflow albums. Chemins avec ~ acceptés.
+source_dir: ~/albums            # originaux (LECTURE SEULE) : HEIC/JPG/PNG + zip éventuels
+out_dir: ~/albums/out
+retries: 3
+
+# Fichiers source à exclure d'office (motifs glob) — l'agent complète après inspection.
+exclure: ["Screenshot_*", "table_*"]
+
+# Conversion
+apercu_px: 1600
+
+# ---------------------------------------------------------------- Détection
+detection:
+  travail_px: 1500             # taille de l'image réduite pour la détection
+  aire_min: 0.004              # fraction de l'aire de la page
+  aire_max: 0.97
+  rectangularite_min: 0.72     # aire contour / aire rectangle minimal
+  marge_rognage: 0.01          # rognage intérieur après redressement (fraction)
+  redressement_min_deg: 0.5
+  bord_partielle_px: 6         # photo touchant le bord de l'image => "partielle"
+  methode: gemini              # gemini | auto | opencv | segmentation (ai.segmentation)
+
+# ---------------------------------------------------------------- Doublons
+doublons:
+  phash_max: 14                # distance de Hamming maxi pour candidats
+  orb_inliers_min: 40          # appariements géométriques confirmant un doublon
+
+# ---------------------------------------------------------------- Fusion multi-prises
+fusion:
+  classique: true              # recalage + empilement pondéré par la netteté (déterministe)
+  generative: false            # fusion par modèle génératif multi-images (voir ai.fusion_generative)
+  taille_ref_max: 4000
+  flux_optique: true           # recalage fin non rigide après homographie
+  exposant_nettete: 4          # plus élevé = privilégie davantage la prise la plus nette
+
+# ---------------------------------------------------------------- Restauration
+restauration:
+  clahe_clip: 1.2
+  clahe_grille: 8
+  debruitage_h: 6
+  nettete_rayon: 1.2
+  nettete_force: 0.6
+  eclairage_flou_frac: 0.08    # correction d'éclairage non uniforme (0 = désactivé)
+  saturation_nb_max: 18        # sous ce seuil (moy. canal S), le tirage est classé N&B
+  agrandir_si_petit_px: 1200   # grand côté < seuil => upscale x2
+  partage_px: 2000
+  entree: auto                 # auto (fusion > raw) | fusion_ia
+
+# ---------------------------------------------------------------- Backends IA
+# backend: none | cmd | space | gemini (modele_image, crédits !)
+#   cmd  : gabarit shell, {in} {out}
+#   space: Space Hugging Face (gradio_client), api_name, args ("{in}" = image)
+# VÉRIFIER les Spaces avant usage (ils changent souvent) : `python scripts/tester_ai.py`
+ai:
+  upscale:
+    backend: none
+    # backend: cmd
+    # cmd: "realesrgan-ncnn-vulkan -i {in} -o {out} -s 2 -n realesrgan-x4plus"
+  visages:                       # testé le 2026-11-15
+    backend: space
+    space: "sczhou/CodeFormer"
+    api_name: "/inference"
+    args: ["{in}", true, false, true, 1, 0.7]   # align, fond, upsample visages, upscale, fidélité
+    max_px: 1280
+  colorisation:                  # testé le 2026-11-15 ; {prompt} = description Gemini de la photo
+    backend: space               # alternative sans génération d'image : scripts/colorisation_guidee.py
+    space: "fffiloni/text-guided-image-colorization"
+    api_name: "/process_image"
+    args: ["{in}", "{prompt}"]
+    max_px: 1280
+  segmentation:
+    backend: none
+  ocr:
+    backend: none
+
+# ---------------------------------------------------------------- Gemini (API REST)
+# Clé : env GEMINI_API_KEY ou fichier_cle (JAMAIS dans ce dossier).
+# Modèles disponibles : curl liste dans PROMPT.md. Coûts suivis : out/logs/gemini_couts.csv
+gemini:
+  fichier_cle: ~/.config/albums/gemini.env
+  modele_vision: gemini-3.8-flash      # détection des tirages, lecture du texte (peu coûteux)
+  modele_image: gemini-4-hydrogen      # fusion multi-prises / restauration / colorisation (coûteux)
+  max_px: 2048                         # côté max des images envoyées
+  timeout_s: 900                # les masques de segmentation peuvent prendre plusieurs minutes
+  plafond_appels_texte: 300            # garde-fou crédits (0 = illimité)
+  plafond_appels_image: 20             # à relever APRÈS validation du POC

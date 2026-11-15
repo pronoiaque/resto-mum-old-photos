@@ -1,0 +1,9 @@
+venv/
+modeles/
+*.pt
+__pycache__/
+# données : jamais dans le dépôt
+*.heic
+*.HEIC
+out/
+*.env
